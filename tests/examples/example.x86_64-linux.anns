@@ -1,0 +1,209 @@
+arch x86-64
+
+import data var1, var2, dat1, dat2
+import function printf
+
+define CHAR_LF, 10
+
+;; section uninit .bss {
+section .bss {
+    var1:
+        .res i8
+    var2:
+        .res i32
+    var3:
+        .res 256, i8        ;; allocates 256 bytes
+}
+
+;; section data .data {
+section .data {
+    dat1:
+        .data i8, 13
+    export dat2:
+        .data i32, 1234
+    dat3:
+        .data 32, i8, 0xff  ;; defines 32 bytes (with value 0xff)
+}
+
+;; section rodata .rodata {
+section .rodata {
+    msg:
+        .data i8, "Hello World!", CHAR_LF, 0
+}
+
+;; section code .text {
+section .text {
+    ;; set the specified registers when running this object file
+    ;; starts with the current function.
+
+    !esetreg edi, 0
+    !esetreg esi, !addr(msg)            ;; functions within helper functions must be enclosed with parenthese.
+    !esetreg edx, !strlen(msg)
+    !esetmem var1, i8, 11, 13, 17, 19
+    !esetmem var2, i32, 101
+
+    export main: {
+        push rbp
+        mov	rbp, rsp
+
+        !pstr "debug functions"
+        !pval "literal: %d", 100
+        !pval "calculated value: %d", !addr(dat1)
+
+        ;; print the registers:
+        ;;
+        ;; the format specifiers are:
+        ;; c - Character
+        ;; d - Signed decimal integer
+        ;; u - Unsigned decimal integer
+        ;; x - Hexadecimal integer
+        ;; b - Binary integer
+
+        !preg "print the value of registers, edi: %d, esi: %d, edx: %d", edi, esi, edx
+
+        mov edi, 100
+        xor eax, eax
+
+        !preg "the value of register EAX before call 'accum': %d", eax
+
+        call accum
+
+        !preg "the return value is: %x ", eax
+
+        ;; print memory:
+        ;;
+        ;; the data type modifiers are:
+        ;; c - Character
+        ;; i8, u8 - 8-bit decimal integer
+        ;; i16, u16 - 16-bit decimal integer
+        ;; i32, u32 - 32-bit decimal integer
+        ;; i64, u64 - 64-bit decimal integer
+        ;; x8, x16, x32, x86 - Hexadecimal integer
+        ;; b8, b16, b32, b64 - Binary integer
+        ;; f16, f32, f64 - Floating-point
+        ;;
+        ;; (not support yet: bf16, i128, u128, x128, b128)
+
+        !paddr "the memory address of 'dat1': %d, 'dat2': %d ", dat1, dat2
+        !pmem "the byte value of 'dat1': %i8 ", dat1
+        !pmem "the 4 bytes begin at 'dat1': %4xi8 ", dat1
+        !pmem "the byte value of 'dat2': %i32 ", dat1
+
+        ;; print vector registers:
+        ;;
+        ;; the same as memory except that it does not support the 'c' modifier.
+        ;; !preg("the value of register XMM0: %i32", xmm0)
+
+        ;; view registers:
+        ;;
+        !regs          ;; list general registers
+        !regs g        ;; also list general registers
+        !regs xmm      ;; arch-specical
+
+        ;; view a range of memory
+        !mem dat3 32   ;; view the range starts from 'dat3' with length 32 bytes.
+
+        mov rsp, rbp
+        pop rbp
+        ret
+    }
+
+    ;; function 'accum(int count) -> int'
+    ;; return the value of sum(0..count)
+    ;;
+    ;; ## ABI
+    ;;
+    ;; NO. 64-bits 32-bits     float     windows     windows fp
+    ;; 1   rdi     edi         xmm0      rcx         xmm0
+    ;; 2   rsi     esi         xmm1      rdx         xmm1
+    ;; 3   rdx     edx         xmm2      r8          xmm2
+    ;; 4   rcx     ecx         xmm3      r9          xmm3
+    ;; 5   r8      r8d         xmm4
+    ;; 6   r9      r9d         xmm5
+    ;;                         xmm6
+    ;;                         xmm7
+    ;;
+    ;; return                            windows
+    ;; NO. 64-bits 32-bits     float
+    ;; 1   rax     eax         xmm0      rax         xmm0
+    accum: {
+        push rbp
+        mov rbp, rsp
+
+        xor esi, esi    ;; index
+        xor eax, eax    ;; sum
+
+        loop: {
+            inc esi
+            cmp esi,eax
+            jz done
+
+            add eax, esi
+            jmp loop
+        }
+        done:
+
+        ;; eax is the return value
+
+        mov rsp, rbp
+        pop rbp
+        ret
+    }
+
+    ;; function 'max(int a, int b) -> int'
+    ;; return the greater number.
+    max: {
+        enter 0, 0  ;; "enter N, 0", N == local vars allocated bytes
+
+        cmp edi, esi
+        _: {                    ;; anonymous label
+            jge left            ;; also supports 'relative-position-label', e.g. 'jz 2f'.
+            right: {            ;; nested block
+                mov eax, esi
+                jmp done        ;; or 'jmp 2f'
+            }
+            left: {
+                mov eax, edi
+            }
+            done:
+        }
+
+        leave
+        ret
+    }
+}
+
+;; unit test section
+section code .text.test {
+    export test_accum: {
+        ;; "enter N, 0", N == local vars allocated bytes
+        enter 0, 0
+
+        mov edi, 100
+        !assert_eq edi, 100, "the initialization number is 100"
+
+        call accum
+
+        !assert_eq eax, 5050, "the accumulation should be 5050"
+
+        !assert_neq eax, 55, "the accumulation should not be 5050"
+        !assert_nez eax, "EAX should not be zero"
+
+        mov eax, 0
+        !assert_eqz eax, "EAX should be zero now"
+
+        mov edi, 11
+        mov esi, 13
+        call max
+
+        !assert_eq eax, 13, "the result of max(11,13) should be 13"
+
+        ;; other asserts
+        ;;
+        ;; !assert_eq !load(i8, dat1), 13
+        ;; !assert_eq !load(i32, dat2), 1234
+
+        leave
+        ret
+    }
+}

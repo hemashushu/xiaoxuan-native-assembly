@@ -1,0 +1,57 @@
+#!/bin/anns
+
+;; link external shared libraries
+;; only available in the script environment
+!link libXYZ
+
+arch x86-64
+
+;; the script environment builtin functions, which make
+;; your script do not necessary require the std C library:
+;;
+;; - puts buf
+;; - fputs buf, file_number
+;; - fgets buf, buf_length, file_number
+;;
+;; environments TODO
+;; args TODO
+
+import function puts, fputs, fgets
+
+define CHAR_LF, 10
+define BUF_LENGTH, 256
+define STD_IN, 1
+
+section .bss {
+    buf:
+        .data i8, BUF_LENGTH
+}
+
+section .rodata {
+    msg:
+        .data i8, "Hello World!", CHAR_LF, 0
+}
+
+section .text {
+    export main: {
+        enter 0, 0
+
+        ;; print "hello world!"
+        lea rdi, [msg]
+        call puts
+
+        ;; read line
+        lea rdi, [buf]
+        mov rsi, BUF_LENGTH
+        mov rdx, STD_IN
+        call fgets
+
+        ;; write line
+        lea rdi, [buf]
+        call puts
+
+        leave
+        ret
+    }
+
+}
