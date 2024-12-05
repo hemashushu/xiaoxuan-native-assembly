@@ -1,5 +1,19 @@
 # XiaoXuan Native Assembly
 
-A modern assembler with built-in debugging and unit testing capabilities, ideal for both project compilation and educational purposes.
+An assembly language for XiaoXuan Native programming language.
 
-Supports architectures including x86-64, aarch64, riscv64, and loongarch64.
+The compilation pipeline:
+
+```text
+XiaoXuan Native -> 
+    XiaoXuan Native IR -> 
+    XiaoXuan Native Assembly -> 
+    CodeGen -> 
+    Object File
+```
+
+The linking pipeline:
+
+```text
+Object Files -> Shared Modules/Share Libraries/Applications
+```
