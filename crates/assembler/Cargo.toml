@@ -1,0 +1,15 @@
+[package]
+name = "assembler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cranelift-codegen = "0.114.0"
+cranelift-frontend = "0.114.0"
+cranelift-module = "0.114.0"
+cranelift-jit = "0.114.0"
+cranelift-native = "0.114.0"
+cranelift-object = "0.114.0"
+
+[dev-dependencies]
+pretty_assertions = "1.4.0"
