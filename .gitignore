@@ -2,11 +2,12 @@
 /Cargo.lock
 /TODO
 
-*.elf
+*.o
+*.a
 *.so
 *.so.1
 *.so.1.0.0
-*.a
+*.elf
 
 .vscode/settings.json
 .idea/
