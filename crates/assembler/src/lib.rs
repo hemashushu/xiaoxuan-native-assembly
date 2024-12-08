@@ -4,9 +4,9 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-mod generator;
+mod code_generator;
 
 // https://doc.rust-lang.org/reference/conditional-compilation.html#debug_assertions
 // https://doc.rust-lang.org/reference/conditional-compilation.html#test
-// #[cfg(debug_assertions)]
-// mod utils;
+#[cfg(debug_assertions)]
+mod utils;

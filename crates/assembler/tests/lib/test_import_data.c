@@ -13,8 +13,7 @@
 #include <time.h>
 #include <string.h>
 
-extern void inc_normal(int);
-extern int get_normal_var();
+// import data
 extern int normal_var;
 
 void sleep_100ms()
@@ -31,17 +30,14 @@ void *child_thread_start(void *arg)
     long tid = (long)arg;
 
     printf("thread: %ld >> init value: %d\n", tid, normal_var);
-    // printf("thread: %ld >> init (read from lib): %d\n", tid, get_normal_var());
     sleep_100ms();
 
-    inc_normal(11);
+    normal_var += 11;
     printf("thread: %ld >> after inc 11: %d\n", tid, normal_var);
-    // printf("thread: %ld >> after inc 11 (read from lib): %d\n", tid, get_normal_var());
     sleep_100ms();
 
     normal_var = 13;
     printf("thread: %ld >> after reset to 13: %d\n", tid, normal_var);
-    // printf("thread: %ld >> after reset to 13 (read from lib): %d\n", tid, get_normal_var());
     sleep_100ms();
 
     pthread_exit(NULL);
@@ -66,15 +62,12 @@ void test_threads(void)
 void test_single_thread(void)
 {
     printf("init value: %d\n", normal_var);
-    // printf("init value (read from lib): %d\n", get_normal_var());
 
-    inc_normal(11);
+    normal_var += 11;
     printf("after inc 11: %d\n", normal_var);
-    // printf("after inc 11 (read from lib): %d\n", get_normal_var());
 
     normal_var = 13;
     printf("after reset to 13: %d\n", normal_var);
-    // printf("after reset to 13 (read from lib): %d\n", get_normal_var());
 }
 
 int main(int argc, char *argv[])

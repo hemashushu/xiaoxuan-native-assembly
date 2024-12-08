@@ -13,8 +13,7 @@
 #include <time.h>
 #include <string.h>
 
-extern void inc_tls(int);
-extern int get_tls_var();
+// import data
 extern __thread int tls_var;
 
 void sleep_100ms()
@@ -31,17 +30,14 @@ void *child_thread_start(void *arg)
     long tid = (long)arg;
 
     printf("thread: %ld >> init value: %d\n", tid, tls_var);
-    // printf("thread: %ld >> init value (read from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
-    inc_tls(11);
+    tls_var += 11;
     printf("thread: %ld >> after inc 11: %d\n", tid, tls_var);
-    // printf("thread: %ld >> after inc 11 (read from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
     tls_var = 13;
     printf("thread: %ld >> after reset to 13: %d\n", tid, tls_var);
-    // printf("thread: %ld >> after reset to 13 (read from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
     pthread_exit(NULL);
@@ -66,15 +62,12 @@ void test_threads(void)
 void test_single_thread(void)
 {
     printf("init value: %d\n", tls_var);
-    // printf("init value (read from lib): %d\n", get_tls_var());
 
-    inc_tls(11);
+    tls_var += 11;
     printf("after inc 11: %d\n", tls_var);
-    // printf("after inc 11 (read from lib): %d\n", get_tls_var());
 
     tls_var = 13;
     printf("after reset to 13: %d\n", tls_var);
-    // printf("after reset to 13 (read from lib): %d\n", get_tls_var());
 }
 
 int main(int argc, char *argv[])

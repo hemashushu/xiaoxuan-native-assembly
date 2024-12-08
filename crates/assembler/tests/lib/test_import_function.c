@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+// import functions
 extern int add(int, int);
 
 int main(int argc, char *argv[])

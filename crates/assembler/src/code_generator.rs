@@ -33,6 +33,12 @@ where
     /// A `Module` is a utility for collecting functions and data objects, and linking them together.
     pub module: T,
 
+    /// Allocate a new compilation context.
+    ///
+    /// The instance should be reused for compiling multiple functions in order to avoid
+    /// needless allocator thrashing.
+    pub context: Context,
+
     /// Structure used for translating a series of functions into Cranelift IR.
     ///
     /// In order to reduce memory reallocations when compiling multiple functions,
@@ -40,11 +46,9 @@ where
     /// functions, rather than dropped, preserving the underlying allocations.
     pub function_builder_context: FunctionBuilderContext,
 
-    /// Allocate a new compilation context.
-    ///
-    /// The instance should be reused for compiling multiple functions in order to avoid
-    /// needless allocator thrashing.
-    context: Context,
+    /// A description of a data object.
+    #[allow(dead_code)]
+    pub data_description: DataDescription,
 }
 
 impl Generator<JITModule> {
@@ -57,6 +61,7 @@ impl Generator<JITModule> {
     //
     // - https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/jit/examples/jit-minimal.rs
     // - https://github.com/bytecodealliance/cranelift-jit-demo/blob/main/src/jit.rs
+    #[allow(dead_code)]
     pub fn new(symbols: Vec<(String, *const u8)>) -> Self {
         // the building flow:
         //
@@ -149,11 +154,13 @@ impl Generator<JITModule> {
         let module = JITModule::new(jit_builder);
         let context = module.make_context();
         let function_builder_context = FunctionBuilderContext::new();
+        let data_description = DataDescription::new();
 
         Self {
             module,
             context,
             function_builder_context,
+            data_description,
         }
     }
 }
@@ -167,6 +174,7 @@ impl Generator<ObjectModule> {
     // Demo:
     //
     // https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/object/tests/basic.rs
+    #[allow(dead_code)]
     pub fn new(module_name: &str, opt_platform: Option<&str>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -193,20 +201,51 @@ impl Generator<ObjectModule> {
         let module = ObjectModule::new(object_builder);
         let context = module.make_context();
         let function_builder_context = FunctionBuilderContext::new();
+        let data_description = DataDescription::new();
 
         Self {
             module,
             context,
             function_builder_context,
+            data_description,
         }
     }
 }
 
+// obtaining the pointer of function and data
+// ------------------------------------------
+//
+// 1. linking
+// `generator.module.finalize_definitions().unwrap();`
+//
+// 2. get function pointers
+// `let func_main_ptr = generator.module.get_finalized_function(func_main_id);`
+//
+// 3. get data pointer
+//
+// ```rust
+// let (buf_ptr, buf_size) = generator.module.get_finalized_data(data_id);
+// let buf = unsafe { std::slice::from_raw_parts(buf_ptr, buf_size) };
+// ```
+//
+// note that the pointers of functions and data only available after 'module.finalize_definitions()'
+//
+// the usage of the function pointer:
+//
+// 1. cast ptr to Rust function
+// `let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };`
+//
+// 2. invoke the function
+// `assert_eq!(func_main(), 13);`
 impl<T> Generator<T>
 where
     T: Module,
 {
-    // https://docs.rs/cranelift-module/latest/cranelift_module/struct.DataDescription.html
+    // The process reading a data (which is inside .data/.ro_data/.bss):
+    // 1. let gv = construct a GlobalValue object
+    // 2. let target_address = ins().symbol_value(gv)
+    // 3. let value = ins().load(target_address)
+    #[allow(dead_code)]
     pub fn define_initialized_data(
         &mut self,
         name: &str,
@@ -222,19 +261,22 @@ where
             Linkage::Local
         };
 
-        let mut data_description = DataDescription::new();
-        data_description.define(data.into_boxed_slice());
-        data_description.set_align(align);
+        // https://docs.rs/cranelift-module/latest/cranelift_module/struct.DataDescription.html
+        self.data_description.define(data.into_boxed_slice());
+        self.data_description.set_align(align);
 
         let data_id = self
             .module
             .declare_data(name, linkage, writable, thread_local)?;
 
-        self.module.define_data(data_id, &data_description)?;
+        self.module.define_data(data_id, &self.data_description)?;
+
+        self.data_description.clear();
 
         Ok(data_id)
     }
 
+    #[allow(dead_code)]
     pub fn define_uninitialized_data(
         &mut self,
         name: &str,
@@ -249,16 +291,28 @@ where
             Linkage::Local
         };
 
-        let mut data_description = DataDescription::new();
-        data_description.define_zeroinit(size);
-        data_description.set_align(align);
+        self.data_description.define_zeroinit(size);
+        self.data_description.set_align(align);
 
         let data_id = self
             .module
             .declare_data(name, linkage, true, thread_local)?;
-        self.module.define_data(data_id, &data_description)?;
+        self.module.define_data(data_id, &self.data_description)?;
+
+        self.data_description.clear();
 
         Ok(data_id)
+    }
+
+    #[allow(dead_code)]
+    pub fn import_data(
+        &mut self,
+        name: &str,
+        writable: bool,
+        thread_local: bool,
+    ) -> Result<DataId, ModuleError> {
+        self.module
+            .declare_data(name, Linkage::Import, writable, thread_local)
     }
 }
 
@@ -271,10 +325,10 @@ mod tests {
     use cranelift_jit::JITModule;
     use cranelift_module::{Linkage, Module};
 
-    use crate::generator::Generator;
+    use crate::code_generator::Generator;
 
     #[test]
-    fn test_jit_base() {
+    fn test_code_generator_jit() {
         // Some tips
         // ---------
         //
@@ -309,10 +363,10 @@ mod tests {
 
         let mut generator = Generator::<JITModule>::new(vec![]);
 
-        // build function "func_inc"
+        // build function "inc"
         //
         // ```rust
-        // fn func_inc (a:i32) -> i32 {
+        // fn inc (a:i32) -> i32 {
         //    a+11
         // }
         // ```
@@ -324,9 +378,9 @@ mod tests {
         // the function "Module::declare_function()"
         // ref:
         // https://docs.rs/cranelift-module/latest/cranelift_module/trait.Module.html#tymethod.declare_function
-        let func_inc_declare = generator
+        let func_inc_id = generator
             .module
-            .declare_function("func_inc", Linkage::Export, &func_inc_sig)
+            .declare_function("inc", Linkage::Local, &func_inc_sig)
             .unwrap();
 
         {
@@ -341,7 +395,7 @@ mod tests {
             // );
 
             let mut func_inc = Function::with_name_signature(
-                UserFuncName::user(0, func_inc_declare.as_u32()),
+                UserFuncName::user(0, func_inc_id.as_u32()),
                 func_inc_sig,
             );
 
@@ -394,7 +448,7 @@ mod tests {
             function_builder.finalize();
 
             // to display the text of IR
-            // `println!("{}", func_inc.display());`
+            // println!("{}", func_inc.display());
 
             // generate func_inc body's (machine/native) code
 
@@ -402,15 +456,17 @@ mod tests {
 
             generator
                 .module
-                .define_function(func_inc_declare, &mut generator.context)
+                .define_function(func_inc_id, &mut generator.context)
                 .unwrap();
+
+            generator.module.clear_context(&mut generator.context);
         }
 
-        // build function "func_main"
+        // build function "main"
         //
         // ```rust
-        // fn func_main () -> i32 {
-        //    func_inc(13)
+        // fn main () -> i32 {
+        //    inc(13)
         // }
         // ```
         let mut func_main_sig = generator.module.make_signature();
@@ -441,7 +497,7 @@ mod tests {
             // https://docs.rs/cranelift-module/latest/cranelift_module/trait.Module.html#method.declare_func_in_func
             let func_inc_ref = generator
                 .module
-                .declare_func_in_func(func_inc_declare, function_builder.func);
+                .declare_func_in_func(func_inc_id, function_builder.func);
 
             let value0 = function_builder.ins().iconst(types::I32, 13);
             let call0 = function_builder.ins().call(func_inc_ref, &[value0]);
@@ -455,6 +511,9 @@ mod tests {
             function_builder.seal_all_blocks();
             function_builder.finalize();
 
+            // to display the text of IR
+            // println!("{}", func_main.display());
+
             // generate func_main body's (machine/native) code
 
             generator.context.func = func_main;
@@ -463,16 +522,15 @@ mod tests {
                 .module
                 .define_function(func_main_delcare, &mut generator.context)
                 .unwrap();
-        }
 
-        // all functions done
-        generator.module.clear_context(&mut generator.context);
+            generator.module.clear_context(&mut generator.context);
+        }
 
         // linking
         generator.module.finalize_definitions().unwrap();
 
         // get function pointers
-        let func_inc_ptr = generator.module.get_finalized_function(func_inc_declare);
+        let func_inc_ptr = generator.module.get_finalized_function(func_inc_id);
         let func_main_ptr = generator.module.get_finalized_function(func_main_delcare);
 
         // cast ptr to Rust function
@@ -493,11 +551,11 @@ mod tests {
     // pass the address of external function through
     // the module symbol list.
     #[test]
-    fn test_jit_call_external_function_by_importing_symbols() {
+    fn test_code_generator_call_external_function_by_importing_symbols() {
         // import/declare a function
 
         let func_add_ptr = add as *const u8; // as *const extern "C" fn(i32,i32)->i32;
-        let symbols = vec![("func_add".to_owned(), func_add_ptr)];
+        let symbols = vec![("add".to_owned(), func_add_ptr)];
 
         let mut generator = Generator::<JITModule>::new(symbols);
 
@@ -506,9 +564,9 @@ mod tests {
         func_add_sig.params.push(AbiParam::new(types::I32));
         func_add_sig.returns.push(AbiParam::new(types::I32));
 
-        let func_add_declare = generator
+        let func_add_id = generator
             .module
-            .declare_function("func_add", Linkage::Import, &func_add_sig)
+            .declare_function("add", Linkage::Import, &func_add_sig)
             .unwrap();
 
         // build function "main"
@@ -523,14 +581,14 @@ mod tests {
         let mut func_main_sig = generator.module.make_signature();
         func_main_sig.returns.push(AbiParam::new(types::I32));
 
-        let func_main_declare = generator
+        let func_main_id = generator
             .module
-            .declare_function("main", Linkage::Local, &func_main_sig)
+            .declare_function("main", Linkage::Export, &func_main_sig)
             .unwrap();
 
         {
             let mut func_main = Function::with_name_signature(
-                UserFuncName::user(0, func_main_declare.as_u32()),
+                UserFuncName::user(0, func_main_id.as_u32()),
                 func_main_sig,
             );
 
@@ -541,7 +599,7 @@ mod tests {
             // https://docs.rs/cranelift-module/latest/cranelift_module/trait.Module.html#method.declare_func_in_func
             let func_add_ref = generator
                 .module
-                .declare_func_in_func(func_add_declare, function_builder.func);
+                .declare_func_in_func(func_add_id, function_builder.func);
 
             let block_0 = function_builder.create_block();
             function_builder.switch_to_block(block_0);
@@ -565,18 +623,17 @@ mod tests {
 
             generator
                 .module
-                .define_function(func_main_declare, &mut generator.context)
+                .define_function(func_main_id, &mut generator.context)
                 .unwrap();
-        }
 
-        // all functions done
-        generator.module.clear_context(&mut generator.context);
+            generator.module.clear_context(&mut generator.context);
+        }
 
         // link
         generator.module.finalize_definitions().unwrap();
 
         // get func_main ptr
-        let func_main_ptr = generator.module.get_finalized_function(func_main_declare);
+        let func_main_ptr = generator.module.get_finalized_function(func_main_id);
         let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };
 
         // call func_main
@@ -587,7 +644,7 @@ mod tests {
     // the function argument, and call the target function
     // by IR 'call_indirect' instruction.
     #[test]
-    fn test_jit_call_external_function_by_function_address() {
+    fn test_code_generator_call_external_function_by_function_address() {
         let mut generator = Generator::<JITModule>::new(vec![]);
         let pointer_type = generator.module.isa().pointer_type();
 
@@ -606,14 +663,14 @@ mod tests {
         func_callme_sig.params.push(AbiParam::new(pointer_type));
         func_callme_sig.returns.push(AbiParam::new(types::I32));
 
-        let func_callme_declare = generator
+        let func_callme_id = generator
             .module
-            .declare_function("callme", Linkage::Local, &func_callme_sig)
+            .declare_function("callme", Linkage::Export, &func_callme_sig)
             .unwrap();
 
         {
             let mut func_callme = Function::with_name_signature(
-                UserFuncName::user(0, func_callme_declare.as_u32()),
+                UserFuncName::user(0, func_callme_id.as_u32()),
                 func_callme_sig,
             );
 
@@ -641,23 +698,22 @@ mod tests {
             function_builder.seal_all_blocks();
             function_builder.finalize();
 
-            // generate the (machine/native) code of func_main
+            // generate the (machine/native) code of func_callme
             generator.context.func = func_callme;
 
             generator
                 .module
-                .define_function(func_callme_declare, &mut generator.context)
+                .define_function(func_callme_id, &mut generator.context)
                 .unwrap();
-        }
 
-        // all functions done
-        generator.module.clear_context(&mut generator.context);
+            generator.module.clear_context(&mut generator.context);
+        }
 
         // link
         generator.module.finalize_definitions().unwrap();
 
         // get func_main ptr
-        let func_callme_ptr = generator.module.get_finalized_function(func_callme_declare);
+        let func_callme_ptr = generator.module.get_finalized_function(func_callme_id);
         let func_callme: extern "C" fn(usize) -> i32 =
             unsafe { std::mem::transmute(func_callme_ptr) };
 
@@ -703,23 +759,19 @@ mod tests {
 
     /// this testing will call an external function with byte array pointer parameters
     #[test]
-    fn test_jit_local_variables() {
+    fn test_code_generator_local_variables() {
         let mut generator = Generator::<JITModule>::new(vec![]);
         let pointer_type = generator.module.isa().pointer_type();
 
-        let func_check_byte_array_addr = check_byte_array as *const u8 as usize;
+        let func_check_addr = check_byte_array as *const u8 as usize;
 
-        let mut func_check_byte_array_sig = generator.module.make_signature();
-        func_check_byte_array_sig
-            .params
-            .push(AbiParam::new(pointer_type));
-        func_check_byte_array_sig
-            .params
-            .push(AbiParam::new(pointer_type));
+        let mut func_check_sig = generator.module.make_signature();
+        func_check_sig.params.push(AbiParam::new(pointer_type));
+        func_check_sig.params.push(AbiParam::new(pointer_type));
 
-        // build function "func_callme"
+        // build function "local_var"
         //
-        // fn callme(i32, i64, f32, f64, &[i32; 2]) -> i32 {
+        // fn local_var(i32, i64, f32, f64, &[i32; 2]) -> i32 {
         //      let foo:[u8; 40] = .. // store values of params
         //      let bar:[u8; 8] = .. // init with zero
         //      check_byte_array(&mut foo, &mut bar)
@@ -727,15 +779,15 @@ mod tests {
         //      return result;
         // }
 
-        let mut func_callme_sig = generator.module.make_signature();
-        func_callme_sig.params.push(AbiParam::new(types::I32));
-        func_callme_sig.params.push(AbiParam::new(types::I64));
-        func_callme_sig.params.push(AbiParam::new(types::F32));
-        func_callme_sig.params.push(AbiParam::new(types::F64));
-        func_callme_sig.params.push(AbiParam::new(pointer_type));
-        func_callme_sig.returns.push(AbiParam::new(types::I32));
+        let mut func_local_var_sig = generator.module.make_signature();
+        func_local_var_sig.params.push(AbiParam::new(types::I32));
+        func_local_var_sig.params.push(AbiParam::new(types::I64));
+        func_local_var_sig.params.push(AbiParam::new(types::F32));
+        func_local_var_sig.params.push(AbiParam::new(types::F64));
+        func_local_var_sig.params.push(AbiParam::new(pointer_type));
+        func_local_var_sig.returns.push(AbiParam::new(types::I32));
 
-        // the IR of func_callme:
+        // the IR of function local_var:
         //
         // ```ir
         // function u0:0(i32, i64, f32, f64, i64) -> i32 system_v {
@@ -758,32 +810,32 @@ mod tests {
         // }
         // ```
 
-        let func_callme_declare = generator
+        let func_local_var_id = generator
             .module
-            .declare_function("callme", Linkage::Local, &func_callme_sig)
+            .declare_function("local_var", Linkage::Export, &func_local_var_sig)
             .unwrap();
 
         {
-            let mut func_callme = Function::with_name_signature(
-                UserFuncName::user(0, func_callme_declare.as_u32()),
-                func_callme_sig,
+            let mut func_local_var = Function::with_name_signature(
+                UserFuncName::user(0, func_local_var_id.as_u32()),
+                func_local_var_sig,
             );
 
             // create two stack slots
-            let ss0 = func_callme.create_sized_stack_slot(StackSlotData::new(
+            let ss0 = func_local_var.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 40,
                 2,
             ));
 
-            let ss1 = func_callme.create_sized_stack_slot(StackSlotData::new(
+            let ss1 = func_local_var.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 8,
                 2,
             ));
 
             let mut function_builder =
-                FunctionBuilder::new(&mut func_callme, &mut generator.function_builder_context);
+                FunctionBuilder::new(&mut func_local_var, &mut generator.function_builder_context);
 
             let block_0 = function_builder.create_block();
             function_builder.append_block_params_for_function_params(block_0);
@@ -803,17 +855,14 @@ mod tests {
 
             let addr_0 = function_builder
                 .ins()
-                .iconst(pointer_type, func_check_byte_array_addr as i64);
+                .iconst(pointer_type, func_check_addr as i64);
             let ptr_0 = function_builder.ins().stack_addr(pointer_type, ss0, 0);
             let ptr_1 = function_builder.ins().stack_addr(pointer_type, ss1, 0);
 
-            let func_check_byte_array_sig_ref =
-                function_builder.import_signature(func_check_byte_array_sig);
-            function_builder.ins().call_indirect(
-                func_check_byte_array_sig_ref,
-                addr_0,
-                &[ptr_0, ptr_1],
-            );
+            let func_check_sig_ref = function_builder.import_signature(func_check_sig);
+            function_builder
+                .ins()
+                .call_indirect(func_check_sig_ref, addr_0, &[ptr_0, ptr_1]);
 
             let value_ret = function_builder.ins().stack_load(types::I32, ss1, 0);
 
@@ -821,34 +870,34 @@ mod tests {
             function_builder.seal_all_blocks();
             function_builder.finalize();
 
-            // println!("{}", func_main.display());
+            // to display the text of IR
+            // println!("{}", func_local_var.display());
 
-            // generate the (machine/native) code of func_main
-            generator.context.func = func_callme;
+            // generate the (machine/native) code of func_local_var
+            generator.context.func = func_local_var;
 
             generator
                 .module
-                .define_function(func_callme_declare, &mut generator.context)
+                .define_function(func_local_var_id, &mut generator.context)
                 .unwrap();
-        }
 
-        // all functions done
-        generator.module.clear_context(&mut generator.context);
+            generator.module.clear_context(&mut generator.context);
+        }
 
         // link
         generator.module.finalize_definitions().unwrap();
 
-        // get "func_callme" ptr
-        let func_callme_ptr = generator.module.get_finalized_function(func_callme_declare);
-        let func_callme: extern "C" fn(i32, i64, f32, f64, usize) -> i32 =
-            unsafe { std::mem::transmute(func_callme_ptr) };
+        // get function "local_var" ptr
+        let func_local_var_ptr = generator.module.get_finalized_function(func_local_var_id);
+        let func_local_var: extern "C" fn(i32, i64, f32, f64, usize) -> i32 =
+            unsafe { std::mem::transmute(func_local_var_ptr) };
 
         // construct the 5th argument of the function "func_callme"
         let buf: [u8; 8] = [31, 0, 0, 0, 37, 0, 0, 0];
         let buf_addr = buf.as_ptr() as usize;
 
         // call "func_callme"
-        assert_eq!(func_callme(41, 43, 3.5, 7.5, buf_addr), 211);
+        assert_eq!(func_local_var(41, 43, 3.5, 7.5, buf_addr), 211);
 
         let buf_as_i32x2 = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const i32, 2) };
         assert_eq!(buf_as_i32x2[0], 53);

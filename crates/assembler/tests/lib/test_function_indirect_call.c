@@ -10,10 +10,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+// import functions
 extern void *get_func_add_address();
 
 int main(int argc, char *argv[])
 {
+    // get the function address
     void *func_address = get_func_add_address();
 
     int (*add)(int, int) = func_address;

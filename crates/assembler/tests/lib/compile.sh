@@ -17,6 +17,8 @@ then
     ln -s libtest0.so.1.0.0 libtest0.so
 fi
 
+gcc -Wall -g -fpic -c -o libtest0.o libtest0.c
+
 # compile the app:
 # `gcc -Wall -g -o test_threads.elf test_threads.c -L $(pwd) -ltest0`
 #
